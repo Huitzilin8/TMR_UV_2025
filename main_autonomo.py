@@ -31,7 +31,7 @@ if __name__=='__main__':
     # estado global
     obstacle=False; sem_color=None; lane_corr=0.0
 
-     try:
+    try:
         while True:
             # Leer cola
             try:
