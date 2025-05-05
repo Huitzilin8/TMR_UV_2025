@@ -35,9 +35,19 @@ color_luz = {
     "Indeterminado": (255, 0, 0) # Azul
 }
 
+def gstreamer_pipeline(sensor_id=0, capture_width=1280, capture_height=720, display_width=640, display_height=480, framerate=30):
+    return (
+        f"nvarguscamerasrc sensor-id={sensor_id} ! "
+        f"video/x-raw(memory:NVMM), width={capture_width}, height={capture_height}, format=NV12, framerate={framerate}/1 ! "
+        f"nvvidconv flip-method=0 ! "
+        f"video/x-raw, width={display_width}, height={display_height}, format=BGRx ! "
+        f"videoconvert ! "
+        f"video/x-raw, format=BGR ! appsink"
+    )
+
 
 # --- Inicialización de la Cámara ---
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(gstreamer_pipeline(sensor_id=0), cv2.CAP_GSTREAMER)
 if not cap.isOpened():
     print("Error: No se pudo abrir la cámara web.")
     exit()
