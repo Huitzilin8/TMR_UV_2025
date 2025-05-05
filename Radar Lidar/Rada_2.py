@@ -1,205 +1,250 @@
-import pygame
 import math
 import sys
-from rplidar import RPLidar
-import numpy as np
 import threading
 import time
+import queue  # <--- Añadir import
+from rplidar import RPLidar
+# Quitamos numpy si ya no hacemos el mapeo aquí
+# import numpy as np
 
-# Configuración del puerto - ajusta según tu sistema
-PORT_NAME = 'COM3'  # En Windows podría ser 'COM3', etc.
+# Configuración del puerto - puede pasarse al __init__ o dejarse global si prefieres
+# PORT_NAME = 'COM3'
 
-class LidarVisualizer:
-    def __init__(self, width=500, height=500):
-        # Inicializar Pygame
-        pygame.init()
-        self.width = width
-        self.height = height
-        self.screen = pygame.display.set_mode((width, height))
-        pygame.display.set_caption("RPLIDAR C1 - Visualización en Tiempo Real")
+class LidarController: # <--- Renombrar clase
+    """
+    Controla la conexión, recolección de datos y detención del LIDAR RPLidar.
+    Diseñado para ser ejecutado en un hilo gestionado externamente.
+    """
+    # Quitar parámetros de visualización del __init__ si no se usan aquí
+    def __init__(self, port='COM3', data_queue=None, stop_event=None):
+        """
+        Inicializa el controlador LIDAR.
 
-        # Colores
-        self.BLACK = (0, 0, 0)
-        self.WHITE = (255, 255, 255)
-        self.RED = (255, 0, 0)
-        self.GREEN = (0, 255, 0)
-        self.YELLOW = (255, 255, 0)
-
-        # Configuración del LIDAR
+        Args:
+            port (str): El puerto serial donde está conectado el LIDAR (ej. 'COM3' o '/dev/ttyUSB0').
+            data_queue (queue.Queue): La cola donde se pondrán los datos del escaneo.
+            stop_event (threading.Event): El evento que señalará cuándo detener la recolección.
+        """
+        self.port = port
         self.lidar = None
-        self.scan_data = []
-        self.max_distance = 1500  # mm
-        self.scale_factor = min(width, height) / 2 / self.max_distance
+        self.scan_data = []  # Podrías quitar esto si sólo envías a la cola
 
-        # Variables para el mapeo
-        self.occupancy_grid = np.zeros((width, height), dtype=np.uint8)
-        self.grid_resolution = 10  # mm por píxel
+        # --- Argumentos para control y comunicación ---
+        # Si no se proporcionan, crear unos por defecto (aunque lo normal es que se pasen)
+        self.data_queue = data_queue if data_queue is not None else queue.Queue()
+        self.stop_event = stop_event if stop_event is not None else threading.Event()
+        # ----------------------------------------------
 
-        # Iniciar conexión con el LIDAR
-        self.connect_lidar()
+        self.data_thread = None # Hilo que ejecutará _collect_data_loop
+        self.is_collecting = False # Flag para controlar el bucle interno
 
-        # Iniciar hilo de recolección de datos
-        self.running = True
-        self.data_thread = threading.Thread(target=self.collect_data_continuously, daemon=True)
-        self.data_thread.start()
+        # --- Quitar la conexión y el inicio del hilo del __init__ ---
+        # self.connect_lidar() # NO conectar aquí
+        # self.data_thread = threading.Thread(target=self.collect_data_continuously, daemon=True) # NO iniciar hilo aquí
+        # self.data_thread.start() # NO iniciar hilo aquí
 
     def connect_lidar(self):
+        """Intenta conectar con el LIDAR e iniciar el motor."""
+        if self.lidar is not None:
+            print("[LidarCtrl] Ya conectado.")
+            return True
         try:
-            self.lidar = RPLidar(PORT_NAME)
-            print("Conectado al LIDAR. Iniciando motor...")
-
-            # Obtener información del dispositivo
+            print(f"[LidarCtrl] Conectando a LIDAR en {self.port}...")
+            self.lidar = RPLidar(self.port)
+            # Opcional: Obtener info y health si lo necesitas
             info = self.lidar.get_info()
-            print(f"Información del dispositivo:")
-            print(f"  Modelo: {info.model}")
-            print(f"  Firmware: {info.firmware}")
-            print(f"  Hardware: {info.hardware}")
-            print(f"  Número de serie: {info.serialnumber}")
-
-            # Obtener estado de salud
             health = self.lidar.get_health()
-            print(f"Estado de salud: {health.status}, Código de error: {health.error_code}")
-
-            # Iniciar motor
+            print(f"[LidarCtrl] Info: {info}")
+            print(f"[LidarCtrl] Salud: {health}")
+            if health.status != 'Good':
+                 print(f"[LidarCtrl] ADVERTENCIA: Estado de salud del LIDAR no es 'Good': {health.status}")
+                 # Podrías decidir no continuar si la salud es mala
+                 # self.lidar.disconnect()
+                 # self.lidar = None
+                 # return False
+            print("[LidarCtrl] Iniciando motor...")
             self.lidar.start_motor()
+            print("[LidarCtrl] Conexión exitosa y motor iniciado.")
+            return True
+        except Exception as e:
+            print(f"[LidarCtrl] Error al conectar/iniciar LIDAR en {self.port}: {e}")
+            if self.lidar:
+                self.lidar.disconnect() # Intenta desconectar si se creó el objeto
+            self.lidar = None
+            return False
+
+    def _collect_data_loop(self):
+        """
+        Bucle ejecutado en un hilo separado para recolectar datos continuamente.
+        Esta función es el 'target' del self.data_thread.
+        Utiliza self.stop_event y self.data_queue pasados en __init__.
+        """
+        self.is_collecting = True
+        print("[LidarCtrl-Thread] Iniciando bucle de recolección...")
+        iterator = None # Definir fuera del try para el finally
+
+        try:
+            # Asegurarse que el LIDAR está listo
+            if self.lidar is None:
+                 print("[LidarCtrl-Thread] Error: LIDAR no conectado al iniciar recolección.")
+                 self.is_collecting = False
+                 return # Salir del hilo
+
+            # max_buf_meas controla cuántas mediciones puede almacenar antes de descartar viejas
+            # Un valor más alto puede ayudar si el procesamiento es lento, pero consume más memoria.
+            iterator = self.lidar.iter_scans(max_buf_meas=5000)
+
+            while self.is_collecting and not self.stop_event.is_set():
+                try:
+                    # next(iterator) bloquea hasta que se complete una vuelta (360 grados)
+                    scan = next(iterator)
+                    # scan es una lista de tuplas: (quality, angle, distance)
+
+                    # Filtrar puntos inválidos (distancia 0) si es necesario
+                    # (Aunque RPLidar ya suele hacerlo, no está de más verificar)
+                    valid_scan = [(q, a, d) for q, a, d in scan if d > 0]
+
+                    # self.scan_data = valid_scan # Opcional: guardar localmente
+
+                    # --- Enviar datos a la cola ---
+                    if self.data_queue is not None and valid_scan:
+                        try:
+                            # Poner en la cola sin bloquear. Si está llena, se perderá el dato.
+                            self.data_queue.put({'tipo': 'lidar', 'datos': valid_scan}, block=False)
+                        except queue.Full:
+                            print("[LidarCtrl-Thread] ADVERTENCIA: Cola de datos LIDAR llena. Descartando escaneo.")
+                            pass # Continuar sin el dato
+                    # -----------------------------
+
+                except StopIteration:
+                    print("[LidarCtrl-Thread] iter_scans detenido inesperadamente.")
+                    self.is_collecting = False # Detener el bucle
+                    break
+                except Exception as e:
+                    print(f"[LidarCtrl-Thread] Error durante escaneo: {e}")
+                    # Aquí podrías intentar reiniciar el iterador o manejar el error
+                    time.sleep(1) # Esperar antes de reintentar
 
         except Exception as e:
-            print(f"Error al conectar con el LIDAR: {e}")
-            sys.exit(1)
+            print(f"[LidarCtrl-Thread] Error crítico en hilo de recolección: {e}")
+        finally:
+            self.is_collecting = False
+            print("[LidarCtrl-Thread] Bucle de recolección finalizado.")
+            # NO llamar a self.stop() desde aquí para evitar deadlock
 
-    def collect_data_continuously(self):
-        while self.running:
+    # --- ESTE ES EL MÉTODO CLAVE ---
+    def start_collection(self):
+        """
+        Inicia la conexión (si no está hecha) y el hilo de recolección de datos.
+        Esta función SÍ usa self.stop_event y self.data_queue (pasados en __init__).
+
+        Returns:
+            bool: True si la recolección se inició correctamente, False en caso contrario.
+        """
+        # 1. Verificar si ya está corriendo
+        if self.is_collecting or (self.data_thread and self.data_thread.is_alive()):
+            print("[LidarCtrl] La recolección ya está en curso.")
+            return True # Ya está iniciado
+
+        # 2. Conectar si es necesario
+        if self.lidar is None:
+            if not self.connect_lidar():
+                print("[LidarCtrl] Fallo al conectar. No se puede iniciar la recolección.")
+                return False # No se pudo conectar
+
+        # 3. Limpiar la señal de parada (por si acaso se reutiliza el evento)
+        self.stop_event.clear()
+        self.is_collecting = False # Asegurar que el flag esté listo
+
+        # 4. Crear e iniciar el hilo de recolección
+        print("[LidarCtrl] Creando e iniciando hilo de recolección de datos...")
+        self.data_thread = threading.Thread(target=self._collect_data_loop,
+                                              name="LidarCollectionInternal")
+                                              # daemon=True es útil, pero gestionaremos con join
+        self.data_thread.daemon = True
+        self.data_thread.start()
+
+        # Pequeña pausa para dar tiempo al hilo a arrancar y potencialmente fallar rápido
+        time.sleep(0.5)
+        if not self.data_thread.is_alive():
+             print("[LidarCtrl] Error: El hilo de recolección no pudo iniciarse correctamente.")
+             self.is_collecting = False
+             return False
+
+        print("[LidarCtrl] Hilo de recolección iniciado.")
+        return True
+
+    def stop(self):
+        """
+        Detiene el hilo de recolección, el motor del LIDAR y desconecta.
+        Debe ser llamado desde el hilo que creó la instancia de LidarController.
+        """
+        print("[LidarCtrl] Solicitando detención...")
+
+        # 1. Señalar al hilo interno que se detenga
+        self.is_collecting = False # Actualizar flag
+        self.stop_event.set()      # Activar evento (despierta a wait() y al bucle)
+
+        # 2. Esperar a que el hilo de recolección termine
+        if self.data_thread is not None and self.data_thread.is_alive():
+            print("[LidarCtrl] Esperando finalización del hilo de recolección...")
+            self.data_thread.join(timeout=3.0) # Esperar hasta 3 segundos
+            if self.data_thread.is_alive():
+                print("[LidarCtrl] ADVERTENCIA: Hilo de recolección no terminó limpiamente.")
+            else:
+                print("[LidarCtrl] Hilo de recolección finalizado.")
+        self.data_thread = None # Limpiar referencia al hilo
+
+        # 3. Detener motor y desconectar LIDAR
+        if self.lidar is not None:
+            print("[LidarCtrl] Deteniendo motor y desconectando LIDAR...")
             try:
-                # Limpiar datos anteriores
-                self.scan_data = []
-
-                # Obtener un escaneo completo (una vuelta)
-                for i, scan_point in enumerate(self.lidar.iter_scan()):
-                    if not self.running:
-                        break
-                    self.scan_data.append(scan_point)
-                    if i > 1000:  # Ajustar según la resolución deseada
-                        break
-
-                # Actualizar el mapa de ocupación
-                self.update_occupancy_grid()
-
-                time.sleep(0.05)  # Breve pausa entre escaneos
-
+                self.lidar.stop()
+                self.lidar.stop_motor()
+                self.lidar.disconnect()
+                print("[LidarCtrl] LIDAR detenido y desconectado.")
             except Exception as e:
-                print(f"Error durante el escaneo: {e}")
-                time.sleep(1)  # Esperar antes de reintentar
+                print(f"[LidarCtrl] Error durante la detención/desconexión: {e}")
+            finally:
+                 self.lidar = None # Limpiar referencia al objeto LIDAR
+        else:
+             print("[LidarCtrl] LIDAR ya estaba desconectado.")
 
-    def update_occupancy_grid(self):
-        # Limpiar el grid (0 = libre, 1 = ocupado)
-        self.occupancy_grid.fill(0)
 
-        # Centro de la pantalla (origen del LIDAR)
-        center_x, center_y = self.width // 2, self.height // 2
-
-        for point in self.scan_data:
-            if point.distance > 0:
-                # Convertir coordenadas polares a cartesianas
-                angle_rad = math.radians(point.angle)
-                distance_px = point.distance / self.grid_resolution
-
-                x = int(center_x + distance_px * math.sin(angle_rad))
-                y = int(center_y - distance_px * math.cos(angle_rad))
-
-                # Asegurarse de que las coordenadas están dentro de los límites
-                if 0 <= x < self.width and 0 <= y < self.height:
-                    self.occupancy_grid[x, y] = 1
-
-    def polar_to_cartesian(self, angle, distance):
-        """Convierte coordenadas polares a cartesianas centradas en la pantalla"""
-        x = self.width // 2 + distance * self.scale_factor * math.sin(math.radians(angle))
-        y = self.height // 2 - distance * self.scale_factor * math.cos(math.radians(angle))
-        return int(x), int(y)
-
-    def draw_lidar_data(self):
-        # Dibujar fondo
-        self.screen.fill(self.BLACK)
-
-        # Dibujar rejilla polar
-        self.draw_polar_grid()
-
-        # Variables para alertas
-        alert_medium = False
-        alert_critical = False
-
-        # Dibujar puntos del LIDAR
-        for point in self.scan_data:
-            if point.distance > 0:
-                x, y = self.polar_to_cartesian(point.angle, point.distance)
-
-                # Colorear según la distancia
-                if point.distance < 200:
-                    color = self.RED
-                    alert_critical = True
-                elif point.distance < 1000:
-                    color = self.YELLOW
-                    alert_medium = True
-                else:
-                    color = self.GREEN
-
-                pygame.draw.circle(self.screen, color, (x, y), 2)
-
-        # Mostrar alertas en pantalla
-        font_alert = pygame.font.SysFont('Arial', 24)
-        if alert_critical:
-            alert_text = font_alert.render('¡PELIGRO! Obstáculo muy cercano', True, self.RED)
-            self.screen.blit(alert_text, (10, 40))
-        elif alert_medium:
-            alert_text = font_alert.render('Advertencia: Obstáculo cercano', True, self.YELLOW)
-            self.screen.blit(alert_text, (10, 40))
-
-        # Mostrar información general
-        font_info = pygame.font.SysFont('Arial', 16)
-        info_text = f"Puntos: {len(self.scan_data)} | Escala: 1px = {1/self.scale_factor:.1f}mm"
-        info_surface = font_info.render(info_text, True, self.WHITE)
-        self.screen.blit(info_surface, (10, 10))
-
-        pygame.display.flip()
-
-    def draw_polar_grid(self):
-        center_x, center_y = self.width // 2, self.height // 2
-
-        # Dibujar círculos concéntricos
-        for r in range(1000, self.max_distance, 1000):
-            radius = int(r * self.scale_factor)
-            pygame.draw.circle(self.screen, (50, 50, 50), (center_x, center_y), radius, 1)
-
-        # Dibujar líneas radiales cada 30 grados
-        for angle in range(0, 360, 30):
-            end_x = center_x + self.max_distance * self.scale_factor * math.sin(math.radians(angle))
-            end_y = center_y - self.max_distance * self.scale_factor * math.cos(math.radians(angle))
-            pygame.draw.line(self.screen, (50, 50, 50), (center_x, center_y), (end_x, end_y), 1)
-
-    def run(self):
-        clock = pygame.time.Clock()
-
-        while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-
-            self.draw_lidar_data()
-            clock.tick(30)  # Limitar a 30 FPS
-
-        self.cleanup()
-
-    def cleanup(self):
-        print("Deteniendo el programa...")
-        self.running = False
-
-        if self.lidar:
-            print("Deteniendo motor y desconectando...")
-            self.lidar.stop_motor()
-            self.lidar.disconnect()
-
-        pygame.quit()
-        sys.exit()
-
+# --- Bloque de Prueba (Opcional) ---
+# Eliminar o comentar este bloque cuando uses LidarController desde main_autonomo.py
 if __name__ == '__main__':
-    visualizer = LidarVisualizer()
-    visualizer.run()
+    print("--- Probando LidarController directamente ---")
+    test_stop_event = threading.Event()
+    test_data_queue = queue.Queue()
+
+    # Crear instancia
+    lidar_controller = LidarController(port='COM3', data_queue=test_data_queue, stop_event=test_stop_event)
+
+    # Iniciar recolección
+    if lidar_controller.start_collection():
+        print("Recolección iniciada. Presiona Ctrl+C para detener.")
+
+        try:
+            # Simular el hilo principal procesando datos
+            while not test_stop_event.is_set():
+                try:
+                    data = test_data_queue.get(timeout=1.0)
+                    print(f"Dato recibido: {data['tipo']}, {len(data['datos'])} puntos.")
+                    # Aquí podrías hacer algún procesamiento básico
+                    test_data_queue.task_done()
+                except queue.Empty:
+                    # print("Esperando datos...")
+                    pass
+                except KeyboardInterrupt: # Capturar Ctrl+C aquí también
+                     print("\nCtrl+C detectado en prueba. Deteniendo...")
+                     test_stop_event.set()
+                     break
+
+        finally:
+            # Detener el LIDAR (esto ocurriría en el finally del main_autonomo.py)
+            print("Deteniendo LidarController desde la prueba...")
+            lidar_controller.stop()
+            print("--- Prueba Finalizada ---")
+    else:
+        print("No se pudo iniciar la recolección.")
