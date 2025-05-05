@@ -51,7 +51,7 @@ def get_lane_correction_and_centers(frame,
             
 # Visualización opcional
     if visualize:
-        vis = frame_res.copy()
+        vis = frame.copy()
         for i in range(1, len(centers)):
             cv2.line(vis, centers[i-1], centers[i], (0,255,0), 2)
         for c in centers:
