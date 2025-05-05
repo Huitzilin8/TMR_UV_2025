@@ -1,41 +1,66 @@
 import cv2
 
-def gstreamer_pipeline(sensor_id=0, capture_width=1280, capture_height=720, display_width=640, display_height=480, framerate=30):
-    return (
-        f"nvarguscamerasrc sensor-id={sensor_id} ! "
-        f"video/x-raw(memory:NVMM), width={capture_width}, height={capture_height}, format=NV12, framerate={framerate}/1 ! "
-        f"nvvidconv flip-method=0 ! "
-        f"video/x-raw, width={display_width}, height={display_height}, format=BGRx ! "
-        f"videoconvert ! "
-        f"video/x-raw, format=BGR ! appsink"
-    )
+# --- Configuration ---
+# Adjust these based on your camera's capabilities and desired output
+capture_width = 1280
+capture_height = 720
+display_width = 1280 # Can be same or different for display scaling
+display_height = 720
+framerate = 30
+flip_method = 0  # 0=Normal, 1=Rotate 180, 2=Horiz Flip, 3=Vert+Horiz Flip
 
-def main():
-    cap0 = cv2.VideoCapture(gstreamer_pipeline(sensor_id=0), cv2.CAP_GSTREAMER)
-    cap1 = cv2.VideoCapture(gstreamer_pipeline(sensor_id=1), cv2.CAP_GSTREAMER)
+window_title = "CSI Camera Feed"
 
-    if not cap0.isOpened():
-        print("No se pudo abrir la cámara 0")
-    if not cap1.isOpened():
-        print("No se pudo abrir la cámara 1")
+# --- Construct the GStreamer pipeline string ---
+# This pipeline uses nvarguscamerasrc (NVIDIA's optimized source for CSI)
+# and nvvidconv for efficient format conversion.
+pipeline = (
+    f"nvarguscamerasrc ! "
+    f"video/x-raw(memory:NVMM), width=(int){capture_width}, height=(int){capture_height}, format=(string)NV12, framerate=(fraction){framerate}/1 ! "
+    f"nvvidconv flip-method={flip_method} ! "
+    f"video/x-raw, width=(int){display_width}, height=(int){display_height}, format=(string)BGRx ! "
+    f"videoconvert ! "
+    f"video/x-raw, format=(string)BGR ! appsink drop=true"
+)
 
-    while cap0.isOpened() or cap1.isOpened():
-        if cap0.isOpened():
-            ret0, frame0 = cap0.read()
-            if ret0:
-                cv2.imshow('Cámara 0', frame0)
-        if cap1.isOpened():
-            ret1, frame1 = cap1.read()
-            if ret1:
-                cv2.imshow('Cámara 1', frame1)
+print("Using GStreamer pipeline:")
+print(pipeline)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+# --- Attempt to open the camera using the GStreamer pipeline ---
+# Note: cv2.CAP_GSTREAMER tells OpenCV to interpret the string as a pipeline
+cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+
+# --- Check if the camera opened successfully ---
+if not cap.isOpened():
+    print("Error: Could not open camera using GStreamer pipeline.")
+    print("Check pipeline string, camera connection, and GStreamer/OpenCV integration.")
+    exit()
+else:
+    print("CSI Camera opened successfully via GStreamer.")
+
+# --- Main Loop: Capture and Display Frames ---
+try:
+    while True:
+        # Read a frame from the camera
+        ret, frame = cap.read()
+
+        # Check if the frame was read successfully
+        if not ret:
+            print("Error: Failed to grab frame. Exiting.")
             break
 
-    cap0.release()
-    cap1.release()
+        # Display the frame in a window
+        cv2.imshow(window_title, frame)
+
+        # Wait for 1ms and check if the 'q' key was pressed to exit
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("Exit key pressed. Closing.")
+            break
+finally:
+    # --- Release resources ---
+    print("Releasing camera resource.")
+    cap.release()
+    print("Destroying OpenCV windows.")
     cv2.destroyAllWindows()
 
-if __name__ == "__main__":
-    main()
-
+print("Script finished.")
