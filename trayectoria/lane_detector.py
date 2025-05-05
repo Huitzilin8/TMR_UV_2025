@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 
 def get_lane_correction_and_centers(frame, 
-        target_size=(640,480), threshold=180, nwindows=10, margin=50):
+        target_size=(640,480), threshold=180, nwindows=10, margin=50, visualize=False):
     """
     Retorna:
       - correction (int px) o None
@@ -48,4 +48,15 @@ def get_lane_correction_and_centers(frame,
         target = centers[3]
         correction = target[0] - (w//2)
         return correction, centers
+            
+# Visualización opcional
+    if visualize:
+        vis = frame_res.copy()
+        for i in range(1, len(centers)):
+            cv2.line(vis, centers[i-1], centers[i], (0,255,0), 2)
+        for c in centers:
+            cv2.circle(vis, c, 4, (0,0,255), -1)
+        cv2.imshow("Visión Carriles", vis)
+        cv2.waitKey(1)
+                
     return None, centers
