@@ -1,107 +1,121 @@
 import cv2
+from ultralytics import YOLO
+import math
+import torch
+from detecciones.detecciones_cuda import analizar_color_semaforo_hsv, ColorSemaforo
+import queue
+import threading
+import zmq
 import numpy as np
-import enum
-
-MAIN = False
-
-class ColorSemaforo(enum.Enum):
-    ROJO = 1
-    AMARILLO = 2
-    VERDE = 3
-    INDETERMINADO = 0 
-
-def analizar_color_semaforo_hsv(roi_semaforo) -> ColorSemaforo:
-    """
-    Analiza el ROI de un semáforo para determinar el color de la luz activa (Rojo, Amarillo, Verde)
-    utilizando el espacio de color HSV.
-
-    Args:
-        roi_semaforo: La imagen (en formato BGR de OpenCV) del área del semáforo detectado.
-
-    Returns:
-        ColorSemaforo: Enum que representa el color detectado (Rojo, Amarillo, Verde o Indeterminado).
-    """
-    if roi_semaforo is None or roi_semaforo.size == 0:
-        return ColorSemaforo.INDETERMINADO # ROI vacío o no válido
-    if MAIN:
-        print(f"semafro: {roi_semaforo.size} pixeles")
-        cv2.imshow(f"semaforo", roi_semaforo)
-
-    # Convertir el ROI a espacio de color HSV
-    hsv = cv2.cvtColor(roi_semaforo, cv2.COLOR_BGR2HSV)
-
-    # --- Definir rangos de color en HSV ---
-    # Estos rangos pueden necesitar ajustes finos dependiendo de la cámara y las condiciones de luz
-
-    # Rojo (nota: el rojo puede estar en dos rangos en el espacio HUE)
-    lower_red1 = np.array([0, 150, 120])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([170, 150, 120])
-    upper_red2 = np.array([180, 255, 255])
-
-    # Amarillo
-    lower_yellow = np.array([20, 100, 100])
-    upper_yellow = np.array([35, 255, 255]) # Ampliado un poco el rango de HUE
-
-    # Verde
-    lower_green = np.array([40, 100, 100]) # Ajustado el límite inferior de HUE
-    upper_green = np.array([85, 255, 255]) # Ajustado el límite superior de HUE
 
 
-    # --- Crear máscaras para cada color ---
-    mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    mask_red = cv2.bitwise_or(mask_red1, mask_red2) # Combinar los dos rangos de rojo
+context = zmq.Context()
+socket = context.socket(zmq.SUB) # Or zmq.PULL
+socket.connect("tcp://localhost:5555")
+socket.subscribe("") # Subscribe to all messages
 
-    mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
-    mask_green = cv2.inRange(hsv, lower_green, upper_green)
+model = YOLO('yolo11n.pt')
+if torch.cuda.is_available():
+    model.to('cuda')
+    print("model load in GPU.")
+else:
+    print("Usando CPU.")
 
-    # --- Calcular cuántos píxeles coinciden con cada máscara ---
-    # Usaremos el número de píxeles blancos en cada máscara
-    pixels_red = cv2.countNonZero(mask_red)
-    if MAIN:
-        print(f"Rojo: {pixels_red} píxeles") # Mostrar el conteo de píxeles rojos (opcional)
-        cv2.imshow("Rojo", mask_red)
-    pixels_yellow = cv2.countNonZero(mask_yellow)
-    if MAIN:
-        print(f"Amarillo: {pixels_yellow} píxeles")
-        cv2.imshow(f"Amarill", mask_yellow)
-    pixels_green = cv2.countNonZero(mask_green)
-    if MAIN:
-        print(f"Verde: {pixels_green} píxeles")
-        while True:
-            cv2.imshow("Verde", mask_green)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-    # --- Determinar el color dominante ---
-    # Establecer un umbral mínimo de píxeles para considerar una luz como activa
-    # Esto ayuda a evitar detecciones erróneas por ruido o reflejos pequeños
-    # Puedes ajustar este valor (depende del tamaño esperado de la luz en el ROI)
-    min_pixels_threshold = int(roi_semaforo.shape[0] * roi_semaforo.shape[1] * 0.03) # Ejemplo: 3% del area del ROI
+# 'trafic_light' y 'stop_sign' pueden cambiar por model
+target_classes_ids = [9, 11]  # 9 = traffic light, 11 = stop sign
+traffic_light_id = 9
+class_names = model.names
 
-    colors = {ColorSemaforo.ROJO: pixels_red, ColorSemaforo.AMARILLO: pixels_yellow, ColorSemaforo.VERDE: pixels_green}
+ESTADOS_SEMAFORO = {
+    ColorSemaforo.ROJO: "Rojo",
+    ColorSemaforo.AMARILLO: "Amarillo",
+    ColorSemaforo.VERDE: "Verde",
+    ColorSemaforo.INDETERMINADO: "Indeterminado",
+}
 
-    # Filtrar colores que no superan el umbral
-    active_colors = {color: pixels for color, pixels in colors.items() if pixels > min_pixels_threshold}
+confidence_threshold = 0.5  # coeficiente de confianza min para deteccion
 
-    if not active_colors:
-        return ColorSemaforo.INDETERMINADO# Ningún color supera el umbral mínimo
+color_semaforo_default = (0, 255, 0)
+color_stop_sign = (0, 0, 255)
+color_luz = {
+    "Rojo": (0, 0, 255),
+    "Amarillo": (0, 255, 255),
+    "Verde": (0, 255, 0),
+    "Apagado": (128, 128, 128),
+    "Indeterminado": (255, 0, 0),
+}
 
-    # Devolver el color con la mayor cantidad de píxeles activos
-    dominant_color = max(active_colors, key=active_colors.get)
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("Error: No se pudo abrir la cámara web.")
+    exit()
+    
+def run_deteccion(stop_event, data_queue: queue.Queue):
+    data = []
+    multipart_message = socket.recv_multipart()
+    meta_str = multipart_message[0].decode('utf-8')
+    frame_bytes = multipart_message[1]
 
-    return dominant_color
+    # Reconstruct frame
+    while not stop_event.is_set():
+        h, w, c = map(int, meta_str.split(','))
+        frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((h, w, c))
+        draw_frame = frame.copy()
 
-# --- (Opcional) Código de prueba ---
-if __name__ == '__main__':
-    # Puedes poner aquí una imagen de prueba de un semáforo si quieres probar la función directamente
-    # Ejemplo:
-    MAIN = True
-    test_image = cv2.imread('cores-do-semaforo.jpg')
-    if test_image is not None:
-        color = analizar_color_semaforo_hsv(test_image)
-        print(f"Color detectado en imagen de prueba: {color}")
-    else:
-        print("No se pudo cargar la imagen de prueba.")
-    print("Archivo analisis_semaforo.py cargado. Contiene la función analizar_color_semaforo_hsv.")
-    print("Ejecuta el archivo principal (detector_webcam_con_analisis.py) para usarlo.")
+        # procesamiento con yolo
+        results = model.predict(frame, stream=True, verbose=False,
+                                device=0 if torch.cuda.is_available() else 'cpu')
+        data = []
+        for r in results:
+            boxes = r.boxes
+            for box in boxes:
+                cls_id = int(box.cls[0])
+                confidence = float(box.conf[0])
+
+                if cls_id in target_classes_ids and confidence >= confidence_threshold:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    estado_luz = 0
+                    box_color = color_semaforo_default
+
+                    if cls_id == traffic_light_id:
+                        y1_roi = max(0, y1)
+                        y2_roi = min(frame.shape[0], y2)
+                        x1_roi = max(0, x1)
+                        x2_roi = min(frame.shape[1], x2)
+
+                        if y1_roi < y2_roi and x1_roi < x2_roi:
+                            roi = frame[y1_roi:y2_roi, x1_roi:x2_roi]
+                            estado_luz = analizar_color_semaforo_hsv(roi)
+                            box_color = color_luz.get(
+                                estado_luz, color_semaforo_default)
+                        else:
+                            estado_luz = ColorSemaforo.INDETERMINADO
+                            box_color = color_luz["Indeterminado"]
+                        data.append(estado_luz)
+                    elif cls_id == 11:
+                        box_color = color_stop_sign
+                        data.append('stop_sign')
+                    
+                    cv2.rectangle(draw_frame, (x1, y1), (x2, y2), box_color, 2)
+                    label = f'{class_names[cls_id]}'
+                    if estado_luz:
+                        label += f' ({ESTADOS_SEMAFORO[estado_luz]})'
+                    label += f': {confidence:.2f}'
+
+                    (text_width, text_height), baseline = cv2.getTextSize(
+                        label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    cv2.rectangle(draw_frame, (x1, y1 - text_height -
+                                baseline), (x1 + text_width, y1), box_color, -1)
+                    cv2.putText(draw_frame, label, (x1, y1 - baseline),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                    
+        data_queue.put({'tipo': 'senalamientos', 'datos': data})
+         
+        cv2.imshow("Detección de Señalamientos", draw_frame)           
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    # --- Limpiar ---
+    cap.release()
+    cv2.destroyAllWindows()
+
