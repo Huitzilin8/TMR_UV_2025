@@ -31,38 +31,35 @@ if __name__=='__main__':
     # estado global
     obstacle=False; sem_color=None; lane_corr=0.0
 
-    try:
+     try:
         while True:
-            # procesar cola
+            # Leer cola
             try:
                 item = data_q.get(block=False)
-            except queue.Empty:
-                pass
-            else:
                 tp, dt = item['tipo'], item['datos']
                 if tp=='lidar':
-                    # detecto obstáculo si dist < X en frente
                     front = [d for (a,d) in dt if -10<=a<=10]
                     obstacle = any(d<300 for d in front)
                 elif tp=='senalamientos':
-                    # tomar primera detección
-                    sem_color = dt[0]['color'] if dt else None
+                    pass  # aquí podrías procesar semáforo
                 elif tp=='carriles':
                     lane_corr = dt['correccion'] or 0.0
+            except queue.Empty:
+                pass
 
-            # lógica de control
+            # Lógica simple
             if obstacle:
                 esp.send_action('STOP')
             else:
-                esp.send_direction(lane_corr/160.0)    # normalizo aprox
+                esp.send_direction(lane_corr/160.0)
                 esp.send_action('FORWARD', 0.5)
 
-            # opcional: dibujar status
+            if cv2.waitKey(1)&0xFF==ord('q'):
+                stop_evt.set()
+                break
             time.sleep(0.01)
-
     except KeyboardInterrupt:
         stop_evt.set()
-
     finally:
         esp.send_action('STOP')
         esp.close()
