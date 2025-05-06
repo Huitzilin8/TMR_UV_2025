@@ -1,15 +1,15 @@
 import threading, queue, time, cv2, numpy as np
-from detecciones.detector_senalamientos import run_deteccion_senalamientos
-from trayectoria.lane_detector import get_lane_correction_and_centers
-from nav.Rada_2 import LidarController
-from control.serial_comm import ESP32Controller
+#from detecciones.detector_senalamientos import run_deteccion_senalamientos
+from lane_detector import get_lane_correction_and_centers
+from Rada_2 import LidarController
+from serial_comm import ESP32Controller
 
 # Cola global y evento de stop
 data_q    = queue.Queue(maxsize=100)
 stop_evt  = threading.Event()
 
 # Hilos
-def hilo_senalamientos(): run_deteccion_senalamientos(stop_evt, data_q, camera_index=0)
+def hilo_senalamientos(): run_deteccion_senalamientos(stop_evt, data_q, camera_index=0,visualize=True)
 def hilo_lidar(): 
     l = LidarController(port='/dev/ttyUSB0', data_queue=data_q, stop_event=stop_evt)
     if l.start_collection(): l.run()
@@ -18,7 +18,7 @@ def hilo_carriles():
     while not stop_evt.is_set():
         ret, frame = cap.read()
         if not ret: continue
-        corr, centers = get_lane_correction_and_centers(frame)
+        corr, centers = get_lane_correction_and_centers(frame,visualize=True)
         data_q.put({'tipo':'carriles','datos':{'correccion':corr,'centros':centers}})
     cap.release()
 

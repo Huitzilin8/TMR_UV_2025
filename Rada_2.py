@@ -9,7 +9,7 @@ class LidarController:
 
     def start_collection(self):
         self.lidar.start_motor()
-        self.generator = self.lidar.iter_scans()
+        self.generator = self.lidar.iter_scan()
         return True
 
     def run(self):
