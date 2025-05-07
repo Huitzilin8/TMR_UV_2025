@@ -1,0 +1,174 @@
+# -*- coding: utf-8 -*-
+import cv2
+import threading
+import numpy as np
+import time
+
+
+class VideoPlayer:
+    def __init__(self, video_path):
+        self.video_path = video_path
+        self.cap = None
+        self.frame = None
+        self.grabbed = False
+        self.read_thread = None
+        self.read_lock = threading.Lock()
+        self.running = False
+
+    def open(self):
+        self.cap = cv2.VideoCapture(self.video_path)
+        if not self.cap.isOpened():
+            print(f"Unable to open video: {self.video_path}")
+            return False
+        self.grabbed, self.frame = self.cap.read()
+        return True
+
+    def start(self):
+        if self.running:
+            print('Video playback is already running')
+            return
+        self.running = True
+        self.read_thread = threading.Thread(target=self.update)
+        self.read_thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.read_thread is not None:
+            self.read_thread.join()
+
+    def update(self):
+        while self.running:
+            grabbed, frame = self.cap.read()
+            if not grabbed:
+                self.running = False
+                break
+            with self.read_lock:
+                self.grabbed = grabbed
+                self.frame = frame
+
+    def read(self):
+        with self.read_lock:
+            frame = self.frame.copy() if self.frame is not None else None
+            grabbed = self.grabbed
+        return grabbed, frame
+
+    def release(self):
+        if self.cap is not None:
+            self.cap.release()
+
+
+def preprocess_frame(frame):
+    frame = cv2.resize(frame, (640, 480))
+    roi = frame[240:, :]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    kernel = np.ones((3, 3), np.uint8)
+    eroded = cv2.erode(binary, kernel, iterations=1)
+    result = np.zeros((480, 640), dtype=np.uint8)
+    result[240:, :] = eroded
+    return result
+
+
+def get_lane_centers(binary_img, nwindows=10, margin=50, minpix=50):
+    height, width = binary_img.shape
+    histogram = np.sum(binary_img[height//2:, :], axis=0)
+    midpoint = width // 2
+    leftx_base = np.argmax(histogram[:midpoint])
+    rightx_base = np.argmax(histogram[midpoint:]) + midpoint
+    window_height = height // nwindows
+    nonzero = binary_img.nonzero()
+    nonzeroy = np.array(nonzero[0])
+    nonzerox = np.array(nonzero[1])
+    leftx_current = leftx_base
+    rightx_current = rightx_base
+    centers = []
+
+    for window in range(nwindows):
+        win_y_low = height - (window + 1) * window_height
+        win_y_high = height - window * window_height
+        win_xleft_low = leftx_current - margin
+        win_xleft_high = leftx_current + margin
+        win_xright_low = rightx_current - margin
+        win_xright_high = rightx_current + margin
+
+        good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
+                          (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
+        good_right_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
+                           (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
+
+        if len(good_left_inds) > minpix:
+            leftx_current = int(np.mean(nonzerox[good_left_inds]))
+        if len(good_right_inds) > minpix:
+            rightx_current = int(np.mean(nonzerox[good_right_inds]))
+
+        if len(good_left_inds) > 0 and len(good_right_inds) > 0:
+            center = int((leftx_current + rightx_current) / 2)
+        elif len(good_left_inds) > 0:
+            center = leftx_current + margin
+        elif len(good_right_inds) > 0:
+            center = rightx_current - margin
+        else:
+            continue
+
+        centers.append((center, (win_y_low + win_y_high) // 2))
+
+    return centers
+
+
+def play_videos(left_video_path, right_video_path):
+    left_player = VideoPlayer(left_video_path)
+    right_player = VideoPlayer(right_video_path)
+
+    if not left_player.open() or not right_player.open():
+        print("Error al abrir los videos.")
+        return
+
+    left_player.start()
+    right_player.start()
+
+    cv2.namedWindow("Lane Detection", cv2.WINDOW_AUTOSIZE)
+
+    while True:
+        grabbed_left, left_frame = left_player.read()
+        grabbed_right, right_frame = right_player.read()
+
+        if not grabbed_left or not grabbed_right:
+            break
+
+        processed_left = preprocess_frame(left_frame)
+        processed_right = preprocess_frame(right_frame)
+
+        try:
+            centers_left = get_lane_centers(processed_left)
+            centers_right = get_lane_centers(processed_right)
+
+            for i in range(1, len(centers_left)):
+                cv2.line(
+                    left_frame, centers_left[i-1], centers_left[i], (0, 255, 0), 2)
+                cv2.circle(left_frame, centers_left[i], 3, (0, 255, 255), -1)
+
+            for i in range(1, len(centers_right)):
+                cv2.line(
+                    right_frame, centers_right[i-1], centers_right[i], (0, 255, 0), 2)
+                cv2.circle(right_frame, centers_right[i], 3, (0, 255, 255), -1)
+
+            combined = np.hstack((left_frame, right_frame))
+            cv2.imshow("Lane Detection", combined)
+
+        except Exception as e:
+            print("Error procesando frame:", e)
+
+        key = cv2.waitKey(30) & 0xFF
+        if key == 27:
+            break
+
+    left_player.stop()
+    right_player.stop()
+    left_player.release()
+    right_player.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    video_path = "/media/nvidia/Nuevo\ vol/downloads/Video.mp4"
+    play_videos(video_path, video_path)
