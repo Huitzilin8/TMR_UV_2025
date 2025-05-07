@@ -1,9 +1,6 @@
-# --- process_a_capture.py (Run with system Python 3.6/3.8) ---
 import cv2
-import zmq
-import numpy as np
-import time
 
+# --- Configuration ---
 # Adjust these based on your camera's capabilities and desired output
 capture_width = 1280
 capture_height = 720
@@ -25,33 +22,45 @@ pipeline = (
     f"videoconvert ! "
     f"video/x-raw, format=(string)BGR ! appsink drop=true"
 )
+
+print("Using GStreamer pipeline:")
+print(pipeline)
+
+# --- Attempt to open the camera using the GStreamer pipeline ---
+# Note: cv2.CAP_GSTREAMER tells OpenCV to interpret the string as a pipeline
 cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 
-# ZeroMQ setup
-context = zmq.Context()
-socket = context.socket(zmq.PUB) # Or zmq.PUSH
-socket.bind("tcp://*:5555") # Bind to a port
-
+# --- Check if the camera opened successfully ---
 if not cap.isOpened():
-    print("Error: Cannot open camera")
+    print("Error: Could not open camera using GStreamer pipeline.")
+    print("Check pipeline string, camera connection, and GStreamer/OpenCV integration.")
     exit()
+else:
+    print("CSI Camera opened successfully via GStreamer.")
 
-print("Capture process started. Publishing frames...")
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+# --- Main Loop: Capture and Display Frames ---
+try:
+    while True:
+        # Read a frame from the camera
+        ret, frame = cap.read()
 
-    # Send frame data (you might need to serialize/compress)
-    # Simple approach: send metadata and raw bytes
-    h, w, c = frame.shape
-    socket.send_multipart([
-        f"{h},{w},{c}".encode('utf-8'), # Send dimensions
-        frame.tobytes()                  # Send raw pixel data
-    ])
-    # time.sleep(0.01) # Optional: control rate if needed
+        # Check if the frame was read successfully
+        if not ret:
+            print("Error: Failed to grab frame. Exiting.")
+            break
 
-cap.release()
-socket.close()
-context.term()
-print("Capture process finished.")
+        # Display the frame in a window
+        cv2.imshow(window_title, frame)
+
+        # Wait for 1ms and check if the 'q' key was pressed to exit
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("Exit key pressed. Closing.")
+            break
+finally:
+    # --- Release resources ---
+    print("Releasing camera resource.")
+    cap.release()
+    print("Destroying OpenCV windows.")
+    cv2.destroyAllWindows()
+
+print("Script finished.")
