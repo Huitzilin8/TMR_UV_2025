@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import serial
 import time
-import queue
 
 # Configuración de la conexión serial con ESP32
 PUERTO_SERIAL = '/dev/ttyTHS1'  # O '/dev/ttyUSB0', '/dev/ttyACM0'
@@ -21,13 +20,17 @@ def enviar_datos_esp(direccion):
     except Exception as e:
         print(f"Error al enviar datos: {e}")
 
-# Función para leer datos de la cola y enviarlos a través del puerto serial
-def procesar_datos_serial(queue):
+# Función para leer datos del archivo de log y enviarlos a través del puerto serial
+def procesar_datos_serial(log_file):
     try:
         while True:
-            if not queue.empty():
-                correction = queue.get()  # Obtener la corrección de la dirección
-                enviar_datos_esp(correction)
+            with open(log_file, 'r') as log:
+                lines = log.readlines()
+                if lines:
+                    # Obtener la última corrección del archivo de log
+                    last_line = lines[-1]
+                    correction = last_line.split(":")[-1].strip()  # Obtener el valor de la corrección
+                    enviar_datos_esp(correction)
             time.sleep(0.1)  # Hacer una pequeña pausa para no sobrecargar la CPU
 
     except Exception as e:
@@ -45,15 +48,9 @@ def main():
     except Exception as e:
         print(f"Error en la conexión: {e}")
 
-    # Crear una cola para pasar los datos entre procesos
-    data_queue = queue.Queue()
-
-    # Iniciar el procesamiento de carriles
-    from lane_detection import start_cameras
-    threading.Thread(target=start_cameras, args=(data_queue,), daemon=True).start()
-
-    # Iniciar el proceso de comunicación serial
-    procesar_datos_serial(data_queue)
+    # Procesar los datos de la comunicación serial
+    log_file = "correcciones_log.txt"
+    procesar_datos_serial(log_file)
 
 if __name__ == "__main__":
     main()
