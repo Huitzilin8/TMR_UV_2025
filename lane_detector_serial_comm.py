@@ -13,8 +13,8 @@ ser = None  # Inicializamos la variable ser
 
 # Clase para lectura de cámara CSI en hilo
 class Camera:
-    def __init__(self):
-        self.video_capture = None
+    def __init__(self, video_path=None):
+        self.video_capture = video_path
         self.frame = None
         self.grabbed = False
         self.read_thread = None
@@ -42,8 +42,9 @@ class Camera:
             )
         )
         try:
-            self.video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-            self.grabbed, self.frame = self.video_capture.read()
+            if self.video_capture is None:
+                self.video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+                self.grabbed, self.frame = self.video_capture.read()
         except RuntimeError:
             print("Unable to open camera with pipeline:\n" + pipeline)
             self.video_capture = None
@@ -251,6 +252,6 @@ except Exception as e:
 
 # Llamada a la función principal
 if __name__ == "__main__":
-    start_cameras()
+    start_cameras()  # Puede ingresarse una ruta como parametro para habilitar procesamiento de videos
     if ser and ser.is_open:
         ser.close()
