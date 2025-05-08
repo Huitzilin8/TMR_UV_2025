@@ -1,4 +1,3 @@
-import pygame
 import math
 import sys
 from rplidar import RPLidar
@@ -7,24 +6,10 @@ import threading
 import time
 
 # Configuración del puerto - ajusta según tu sistema
-PORT_NAME = 'COM3'  # En Windows podría ser 'COM3', etc.
+PORT_NAME = '/dev/ttyUSB0'  # En Windows podría ser 'COM3', etc.
 
 class LidarVisualizer:
     def __init__(self, width=500, height=500):
-        # Inicializar Pygame
-        pygame.init()
-        self.width = width
-        self.height = height
-        self.screen = pygame.display.set_mode((width, height))
-        pygame.display.set_caption("RPLIDAR C1 - Visualización en Tiempo Real")
-
-        # Colores
-        self.BLACK = (0, 0, 0)
-        self.WHITE = (255, 255, 255)
-        self.RED = (255, 0, 0)
-        self.GREEN = (0, 255, 0)
-        self.YELLOW = (255, 255, 0)
-
         # Configuración del LIDAR
         self.lidar = None
         self.scan_data = []
@@ -42,6 +27,7 @@ class LidarVisualizer:
         self.running = True
         self.data_thread = threading.Thread(target=self.collect_data_continuously, daemon=True)
         self.data_thread.start()
+        self.alert_status = None
 
     def connect_lidar(self):
         try:
@@ -116,7 +102,7 @@ class LidarVisualizer:
         y = self.height // 2 - distance * self.scale_factor * math.cos(math.radians(angle))
         return int(x), int(y)
 
-    def draw_lidar_data(self):
+    def estimate_lidar_data(self):
         # Dibujar fondo
         self.screen.fill(self.BLACK)
 
@@ -131,60 +117,26 @@ class LidarVisualizer:
         for point in self.scan_data:
             if point.distance > 0:
                 x, y = self.polar_to_cartesian(point.angle, point.distance)
-
                 # Colorear según la distancia
                 if point.distance < 200:
-                    color = self.RED
                     alert_critical = True
                 elif point.distance < 1000:
-                    color = self.YELLOW
                     alert_medium = True
-                else:
-                    color = self.GREEN
-
-                pygame.draw.circle(self.screen, color, (x, y), 2)
-
-        # Mostrar alertas en pantalla
-        font_alert = pygame.font.SysFont('Arial', 24)
-        if alert_critical:
-            alert_text = font_alert.render('¡PELIGRO! Obstáculo muy cercano', True, self.RED)
-            self.screen.blit(alert_text, (10, 40))
-        elif alert_medium:
-            alert_text = font_alert.render('Advertencia: Obstáculo cercano', True, self.YELLOW)
-            self.screen.blit(alert_text, (10, 40))
-
-        # Mostrar información general
-        font_info = pygame.font.SysFont('Arial', 16)
-        info_text = f"Puntos: {len(self.scan_data)} | Escala: 1px = {1/self.scale_factor:.1f}mm"
-        info_surface = font_info.render(info_text, True, self.WHITE)
-        self.screen.blit(info_surface, (10, 10))
-
-        pygame.display.flip()
-
-    def draw_polar_grid(self):
-        center_x, center_y = self.width // 2, self.height // 2
-
-        # Dibujar círculos concéntricos
-        for r in range(1000, self.max_distance, 1000):
-            radius = int(r * self.scale_factor)
-            pygame.draw.circle(self.screen, (50, 50, 50), (center_x, center_y), radius, 1)
-
-        # Dibujar líneas radiales cada 30 grados
-        for angle in range(0, 360, 30):
-            end_x = center_x + self.max_distance * self.scale_factor * math.sin(math.radians(angle))
-            end_y = center_y - self.max_distance * self.scale_factor * math.cos(math.radians(angle))
-            pygame.draw.line(self.screen, (50, 50, 50), (center_x, center_y), (end_x, end_y), 1)
+        
+        if self.alert_status is not None:
+            if alert_medium:
+                self.alert_status = "ALERTA MEDIA"
+            elif alert_critical:
+                self.alert_status = "ALERTA CRÍTICA"
+            else:
+                self.alert_status = None
 
     def run(self):
-        clock = pygame.time.Clock()
-
         while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-
-            self.draw_lidar_data()
-            clock.tick(30)  # Limitar a 30 FPS
+            self.estimate_lidar_data()
+            if self.alert_status is not None:
+                print(f"ALERTA: {self.alert_status}")
+            time.sleep(0.1) 
 
         self.cleanup()
 
@@ -197,7 +149,6 @@ class LidarVisualizer:
             self.lidar.stop_motor()
             self.lidar.disconnect()
 
-        pygame.quit()
         sys.exit()
 
 if __name__ == '__main__':
