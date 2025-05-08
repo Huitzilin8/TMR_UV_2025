@@ -14,6 +14,8 @@ class LidarVisualizer:
         self.lidar = None
         self.scan_data = []
         self.max_distance = 6000  # mm
+        self.width = width
+        self.height = height
         self.scale_factor = min(width, height) / 2 / self.max_distance
 
         # Variables para el mapeo
@@ -103,11 +105,6 @@ class LidarVisualizer:
         return int(x), int(y)
 
     def estimate_lidar_data(self):
-        # Dibujar fondo
-        self.screen.fill(self.BLACK)
-
-        # Dibujar rejilla polar
-        self.draw_polar_grid()
 
         # Variables para alertas
         alert_medium = False
@@ -123,19 +120,21 @@ class LidarVisualizer:
                 elif point.distance < 1000:
                     alert_medium = True
         
-        if self.alert_status is not None:
-            if alert_medium:
-                self.alert_status = "ALERTA MEDIA"
-            elif alert_critical:
-                self.alert_status = "ALERTA CRÍTICA"
-            else:
-                self.alert_status = None
+        if alert_critical:
+            self.alert_status = "ALERTA CRÍTICA"
+        elif alert_medium:
+            self.alert_status = "ALERTA MEDIA"
+        else:
+            self.alert_status = None
 
     def run(self):
         while self.running:
             self.estimate_lidar_data()
             if self.alert_status is not None:
                 print(f"ALERTA: {self.alert_status}")
+            else:
+                print(f"Puntos encontrados: {len(self.scan_data)}")
+
             time.sleep(0.1) 
 
         self.cleanup()
