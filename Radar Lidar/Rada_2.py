@@ -18,6 +18,10 @@ class LidarVisualizer:
         self.height = height
         self.scale_factor = min(width, height) / 2 / self.max_distance
 
+        # --- ROI Cone Parameters ---
+        self.roi_center_angle_degrees = 0.0  # Degrees, 0 is typically forward
+        self.roi_half_angle_width_degrees = 30.0  # Degrees, so cone is 60 degrees wide
+
         # Variables para el mapeo
         self.occupancy_grid = np.zeros((width, height), dtype=np.uint8)
         self.grid_resolution = 10  # mm por píxel
@@ -103,22 +107,51 @@ class LidarVisualizer:
         x = self.width // 2 + distance * self.scale_factor * math.sin(math.radians(angle))
         y = self.height // 2 - distance * self.scale_factor * math.cos(math.radians(angle))
         return int(x), int(y)
+        
+    def is_within_roi_cone(self, angle_degrees, distance_mm):
+        """
+        Checks if a given angle and distance fall within the defined ROI cone.
+        """
+        # (Optional) Check distance first
+        # if distance_mm > self.roi_max_distance:
+        #     return False
+        # Or if you want to use the general max_distance
+        if distance_mm > self.max_distance or distance_mm == 0: # Also ignore 0 distance points
+            return False
+
+        # Normalize the angle to be between -180 and 180 for easier comparison
+        # This helps simplify checking across the 0/360 degree boundary
+        angle_normalized = (angle_degrees - self.roi_center_angle_degrees + 180) % 360 - 180
+
+        # Check if the normalized angle is within the half_angle_width
+        if -self.roi_half_angle_width_degrees <= angle_normalized <= self.roi_half_angle_width_degrees:
+            return True
+        return False
 
     def estimate_lidar_data(self):
-
-        # Variables para alertas
         alert_medium = False
         alert_critical = False
 
-        # Dibujar puntos del LIDAR
+        # We will count points within the ROI for relevant alerting
+        points_in_roi_count = 0
+        critical_points_in_roi = 0
+        medium_points_in_roi = 0
+
         for point in self.scan_data:
-            if point.distance > 0:
-                x, y = self.polar_to_cartesian(point.angle, point.distance)
-                # Colorear según la distancia
-                if point.distance < 200:
+            # --- Apply ROI Cone Filter ---
+            if self.is_within_roi_cone(point.angle, point.distance):
+                points_in_roi_count += 1
+                # The polar_to_cartesian is mostly for visualization, which you might
+                # want to restrict to ROI as well, or show all points but only alert on ROI.
+                # For now, alerting logic will be based on ROI.
+                # x, y = self.polar_to_cartesian(point.angle, point.distance)
+
+                if point.distance < 200:  # Critical distance in mm
                     alert_critical = True
-                elif point.distance < 1000:
+                    critical_points_in_roi +=1
+                elif point.distance < 1000:  # Medium distance in mm
                     alert_medium = True
+                    medium_points_in_roi +=1
         
         if alert_critical:
             self.alert_status = "ALERTA CRÍTICA"
