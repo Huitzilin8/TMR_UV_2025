@@ -13,13 +13,11 @@ def enviar_datos_esp(velocidad, direccion):
     try:
         if ser is None or not ser.is_open:
             ser.open()
-
         dato_a_enviar = f"{velocidad},{direccion}\n"
         ser.write(dato_a_enviar.encode('utf-8'))
         print(f"Datos enviados: {dato_a_enviar.strip()}")
     except Exception as e:
         print(f"Error al enviar datos: {e}")
-
 
 def main():
     # Conectar al puerto serial
@@ -32,9 +30,9 @@ def main():
     except Exception as e:
         print(f"Error en la conexión: {e}")
 
-    # Enviar dirección y velocidad (ejemplo de valores)
-    velocidad = 'i'  # Puedes usar este valor dependiendo de la detección
-    direccion = 'd'  # Ejemplo de dirección (izquierda/derecha)
+    # Enviar dirección y velocidad
+    velocidad = 'i'  # Aumentar o reducir según la velocidad deseada
+    direccion = 'd' if correction > 0 else 'i' if correction < 0 else 's'  # 'd' para derecha, 'i' para izquierda
     enviar_datos_esp(velocidad, direccion)
 
     if ser and ser.is_open:
